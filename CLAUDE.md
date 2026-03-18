@@ -7,7 +7,7 @@ Use `aid run` to dispatch coding tasks to AI agents instead of writing code dire
 - **Project**: auto-trading-agent
 - **Profile**: standard
 - **Budget**: $20/day
-- **Verify**: cargo test
+- **Verify**: npm test
 
 ### Rules
 - All new functions must have at least one test
