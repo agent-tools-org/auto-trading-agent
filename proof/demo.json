@@ -1,0 +1,44 @@
+{
+  "timestamp": "2026-03-19T01:04:10.811Z",
+  "chain": "Base (8453)",
+  "rpcUrl": "https://mainnet.base.org",
+  "block": {
+    "number": 43546449,
+    "timestamp": "2026-03-19T01:04:05.000Z",
+    "transactions": 262
+  },
+  "prices": {
+    "WETH/USDC": {
+      "uniswap": 2193.72,
+      "aerodrome": 0,
+      "midPrice": 2193.72,
+      "spreadPct": 0
+    },
+    "WETH/cbBTC": {
+      "pool": "0x8c7080564B5A792A33Ef2FD473fbA6364d5495e5",
+      "price": 0.030875
+    }
+  },
+  "detectedRegime": {
+    "regime": "mean_reversion",
+    "direction": "short",
+    "confidence": 0.823,
+    "features": {
+      "volatility": 5,
+      "trendStrength": -0.0005,
+      "zScore": 3.152,
+      "venueSpread": 0,
+      "volumeTrend": 0.964,
+      "dataPoints": 50
+    }
+  },
+  "riskParams": {
+    "maxPositionUsd": 500,
+    "maxDrawdownPct": 5,
+    "perTradeLossLimitUsd": 50,
+    "cooldownMs": 60000,
+    "maxConsecutiveLosses": 3,
+    "minEdgeBps": 10,
+    "maxSlippageBps": 50
+  }
+}
