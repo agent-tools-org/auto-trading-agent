@@ -5,57 +5,91 @@
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│                    Trading Agent Loop                     │
-│                                                          │
-│  ┌─────────────┐    ┌──────────────┐    ┌────────────┐  │
-│  │  Price Feed  │───▶│   Regime     │───▶│    AI      │  │
-│  │  (on-chain)  │    │  Detector    │    │  Reasoner  │  │
-│  └─────────────┘    └──────────────┘    └─────┬──────┘  │
-│        │                                       │         │
-│        │              ┌──────────────┐         │         │
-│        └─────────────▶│    Risk      │◀────────┘         │
-│                       │   Manager    │                   │
-│                       └──────┬───────┘                   │
-│                              │                           │
-│                       ┌──────▼───────┐                   │
-│                       │    Swap      │                   │
-│                       │  Executor    │                   │
-│                       └──────┬───────┘                   │
-│                              │                           │
-│                       Base L2 (8453)                     │
-│                  Aerodrome  ·  Uniswap                   │
-└──────────────────────────────────────────────────────────┘
+  Market Data          Regime             AI              Risk            Execution
+  (on-chain)         Detection         Reasoning       Management
+                                                                      
+ ┌────────────┐    ┌────────────┐    ┌────────────┐   ┌────────────┐   ┌────────────┐
+ │ Aerodrome  │───▶│  Volatility│───▶│   Claude    │──▶│  Drawdown  │──▶│   Route    │
+ │ V2 pools   │    │  Trend     │    │   Approve/  │   │  Limits    │   │   to best  │
+ │            │    │  Z-score   │    │   Reject    │   │            │   │   venue    │
+ │ Uniswap   │    │  Spread    │    │   + size    │   │  Cooldown  │   │            │
+ │ V3 pools   │    │  Volume    │    │   modifier  │   │  Per-trade │   │   Sign &   │
+ │            │    │            │    │             │   │  loss cap  │   │   submit   │
+ └────────────┘    └────────────┘    └────────────┘   └────────────┘   └────────────┘
+       │                 │                 │                │                │
+       └─────────────────┴─────────────────┴────────────────┴────────────────┘
+                                    Base L2 (Chain 8453)
+                               Aerodrome  ·  Uniswap V3
 ```
 
-### Components
+**Pipeline:** Market Data → Regime Detection → AI Reasoning → Risk Management → Execution
+
+The agent autonomously trades on Base by reading on-chain pool states from Aerodrome and Uniswap, classifying market regimes (momentum / mean-reversion / no-trade), letting an AI layer approve or veto each trade with a confidence-scaled size multiplier, enforcing strict risk limits, and routing the swap to the best venue.
+
+## How It Works
+
+### 1. Market Data Ingestion
+
+The price feed reads real-time pool states from both **Aerodrome V2** (AMM reserves) and **Uniswap V3** (concentrated liquidity sqrtPriceX96) on Base. It maintains a rolling window of mid-prices and detects significant moves.
+
+### 2. Regime Detection
+
+A statistical classifier labels each pair's market condition:
+
+| Regime | Condition | Action |
+|--------|-----------|--------|
+| **Momentum** | Strong trend + moderate volatility | Trade in trend direction |
+| **Mean-reversion** | Price far from mean (high z-score) + low trend | Trade back toward mean |
+| **No-trade** | Insufficient data, toxic flow, or no clear signal | Skip — preserve capital |
+
+Features used: realised volatility, linear trend strength, z-score, cross-venue spread, volume trend.
+
+### 3. AI Reasoning (Claude)
+
+An LLM-powered risk analyst evaluates every trade proposal. It returns structured JSON with:
+
+- **Decision** — approve or reject
+- **Confidence** — 0 to 1
+- **Size multiplier** — 0.0× to 1.5× (scales position size)
+- **Explanation** — 1–3 sentence rationale
+- **Risk flags** — list of concerns (high volatility, drawdown, consecutive losses, etc.)
+
+Falls back to a deterministic heuristic when no API key is configured.
+
+### 4. Risk Management
+
+Hard limits enforced on every trade:
+
+| Control | Default | Description |
+|---------|---------|-------------|
+| **Max position** | $500 | Maximum single trade size |
+| **Max drawdown** | 5% | Circuit breaker — stops all trading |
+| **Per-trade loss** | $50 | Caps worst-case loss per trade |
+| **Cooldown** | 60 s | Pause after 3 consecutive losses |
+| **Min edge** | 10 bps | Won't trade unless expected edge exceeds cost |
+| **Max slippage** | 50 bps | Rejects fills with excessive slippage |
+
+Additional dynamic sizing: positions shrink as drawdown approaches the limit.
+
+### 5. Execution
+
+Trades are routed to the venue with the better price:
+- **Aerodrome** — `swapExactTokensForTokens` via Router V2
+- **Uniswap V3** — `exactInputSingle` via SwapRouter02
+
+Approvals, slippage protection, and gas estimation are handled automatically. Every trade logs a full decision record (regime, AI explanation, tx hash, PnL) to `logs/trades.jsonl`.
+
+## Components
 
 | Module | File | Purpose |
 |--------|------|---------|
-| **Price Feed** | `src/data/price-feed.ts` | Reads on-chain pool reserves/prices from Aerodrome (V2) and Uniswap (V3) via viem. Maintains rolling price history and detects significant moves. |
-| **Regime Detector** | `src/strategy/regime-detector.ts` | Classifies market conditions into momentum, mean-reversion, or no-trade using volatility, trend strength, z-score, cross-venue spread, and volume patterns. |
-| **AI Reasoner** | `src/agent/ai-reasoner.ts` | LLM-based (Claude) reasoning layer that evaluates trade proposals. Returns approve/reject with confidence, size multiplier, and structured explanation. Falls back to deterministic logic when no API key is set. |
-| **Risk Manager** | `src/risk/risk-manager.ts` | Enforces max position size, drawdown limits, per-trade loss limits, cooldowns after consecutive losses, and dynamic position scaling. |
-| **Swap Executor** | `src/execution/swap-executor.ts` | Executes trades on Base via Aerodrome Router V2 and Uniswap V3 SwapRouter02. Handles approvals, slippage calculation, and returns real TxIDs. |
-| **Trading Agent** | `src/agent/trading-agent.ts` | Main orchestration loop: polls prices → detects regime → builds proposal → risk check → AI evaluation → execute → log. |
+| **Price Feed** | `src/data/price-feed.ts` | Reads on-chain pool reserves/prices from Aerodrome (V2) and Uniswap (V3) via viem. Maintains rolling price history. |
+| **Regime Detector** | `src/strategy/regime-detector.ts` | Classifies market conditions into momentum, mean-reversion, or no-trade using statistical features. |
+| **AI Reasoner** | `src/agent/ai-reasoner.ts` | LLM-based (Claude) reasoning layer. Approves/rejects trades with confidence and size multiplier. |
+| **Risk Manager** | `src/risk/risk-manager.ts` | Enforces position limits, drawdown circuit breaker, cooldowns, and dynamic position scaling. |
+| **Swap Executor** | `src/execution/swap-executor.ts` | Executes trades on Base via Aerodrome and Uniswap. Handles approvals, slippage, and returns real tx hashes. |
+| **Trading Agent** | `src/agent/trading-agent.ts` | Main loop: poll → detect → propose → risk check → AI evaluate → execute → log. |
 | **Config** | `src/config.ts` | Chain config, token addresses, DEX contracts, risk parameters, and environment variable loading. |
-
-## Strategy: Liquidity Migration Regime Trader
-
-The agent trades only when three independent layers agree:
-
-1. **Signal Layer** — Detects whether a pair is in momentum continuation, mean-reversion after overshoot, or no-trade/toxic-flow regime using statistical features (volatility, trend strength, z-score, cross-venue spread).
-
-2. **Execution Layer** — Compares expected edge vs. gas cost, DEX fees, price impact, and stale quote risk. Routes to the best venue (Aerodrome or Uniswap).
-
-3. **Risk Layer** — AI agent approves, scales, or rejects trades based on drawdown, consecutive losses, volatility, and consistency of the thesis.
-
-### What makes it novel
-
-- **Cross-venue liquidity migration detection** between Aerodrome and Uniswap on Base
-- **AI-gated regime classification** — the LLM acts as a risk gatekeeper with veto power, not just a UI wrapper
-- **Dynamic position sizing** via AI confidence multipliers within strict bounds
-- **Autonomous decision-making** with full reasoning traces logged
 
 ## Trading Pairs
 
@@ -84,12 +118,14 @@ cp .env.example .env
 
 Required environment variables:
 - `PRIVATE_KEY` — Wallet private key (hex)
-- `ANTHROPIC_API_KEY` — (Optional) For AI-powered trade reasoning
 
-Optional overrides:
+Optional:
+- `ANTHROPIC_API_KEY` — For AI-powered trade reasoning (falls back to deterministic without it)
 - `BASE_RPC_URL` — Custom RPC endpoint (default: `https://mainnet.base.org`)
 - `MAX_POSITION_USD` — Max position size (default: 500)
 - `MAX_DRAWDOWN_PCT` — Max drawdown % (default: 5)
+- `PER_TRADE_LOSS_LIMIT_USD` — Per-trade loss limit (default: 50)
+- `COOLDOWN_MS` — Cooldown after consecutive losses (default: 60000)
 - `POLL_INTERVAL_MS` — Polling interval (default: 15000)
 
 ### Build & Run
@@ -98,11 +134,27 @@ Optional overrides:
 # Build
 npm run build
 
-# Run
+# Run the agent
 npm start
 
 # Or run directly in development
 npm run dev
+```
+
+### Demo (read-only)
+
+Run the demo to read real Base mainnet data without trading:
+
+```bash
+npm run demo
+```
+
+This connects to Base, reads live WETH/USDC prices from both Aerodrome and Uniswap, looks up the WETH/cbBTC pool, runs regime detection, and saves the results to `proof/demo.json`.
+
+### Tests
+
+```bash
+npm test
 ```
 
 ### Graceful Shutdown
@@ -129,17 +181,6 @@ All decisions are logged to `logs/trades.jsonl` in JSONL format:
   "aiExplanation": "Strong upward momentum with moderate volatility..."
 }
 ```
-
-## Risk Controls
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| Max Position | $500 | Maximum single position size |
-| Max Drawdown | 5% | Circuit breaker on portfolio drawdown |
-| Per-Trade Loss | $50 | Maximum acceptable loss per trade |
-| Cooldown | 60s | Pause after 3 consecutive losses |
-| Min Edge | 10 bps | Minimum expected edge to trade |
-| Max Slippage | 50 bps | Maximum slippage tolerance |
 
 ## License
 
