@@ -10,10 +10,12 @@
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "demo": "tsx scripts/demo.ts"
+    "demo": "tsx scripts/demo.ts",
+    "compile": "npx tsx src/compile.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
+    "solc": "^0.8.34",
     "viem": "^2.23.0"
   },
   "devDependencies": {
